@@ -1,0 +1,625 @@
+breed [workers worker]
+breed [firms firm]
+
+globals [
+    counter       ;; Variable to track time and turns 
+    prodA         ;; Firm A Production
+    prodB         ;; Firm B Production
+ 
+ 
+    aeffort
+
+    
+    effort_green_
+    effort_blue_
+    
+    sdgreen        ;; Standard Deviation of Wage Distribution in Firm A
+    sdblue         ;; Standard Deviation of Wage Distribution in Firm B
+
+
+    wage_green     ;; mean wage in Firm A
+    wage_blue      ;; mean wage in Firm B
+    
+    sdeffortgreen  ;; Standard Deviation of Effort in Firm A
+    sdeffortblue   ;; Standard Deviation of Effort in Firm B
+   
+    effort_green   ;; Mean Effort in Firm A
+    effort_blue    ;; Mean Effort in Firm B
+    
+    vtmwage_green  ;; Variance-to-mean ration of Wage in Firm A
+    vtmwage_blue   ;; Variance-to-mean ratio of Wage in Firm B
+    
+    vtmeffort_green ;; Variance-to-mean ratio of Effort in Firm A
+    vtmeffort_blue  ;; Variance-to-mean ratio of Effort in Firm B
+    
+    less-prod       ;; Value to factor the less skilled worker in the model in the Minimum Wage Accounting
+ 
+    
+    
+]
+
+workers-own [
+  effort        ;; (0,1) The efective level of effort done by the worker in his job. Initially equal to Leisure
+  leisure       ;; leisure preferences of the worker (0,1)
+  ask-wage      ;; The wage that workers want to be paid each "turn"
+  real-wage     ;; The real wage paid to the worker
+  skill         ;; The skill endowment of each worker 
+  category      ;; Boolean, true if employed, false  if unemployed. Redundant, cause I identify this characteristic by Agent's colors
+  counter-wk    ;; variable to track woker's effort/wage demand gap time
+  counter-un    ;; variable to track a worker's turns as unemployed
+  waittime      ;; variable to induce different waiting periods for unemployed workers to look for work 
+  effortlist    ;; variable to track worker's past efforts
+  aeffortlist   ;; variable to track worker's shadow past efforts (for mechanism two: demand better wage first, if denied, low effort.) 
+  IMGa          ;; unemployed worker's potential marginal contribution to the firm A
+  IMGb          ;; unemployed worker's potential marginal contribution to the firm B
+  suma1
+  suma2
+  mine1
+  mine2
+  
+  z1            
+  z2
+  
+  
+  ]
+
+firms-own [
+  costs         ;; The total wage paid to employed workers
+  income        ;; The amount of income each firm produces
+  profit        ;; Income - costs
+  capital       ;; accumulated income
+  capitallist   ;; variable to keep track of past capital records
+  bankrupt      ;; variable to acknowledge that a firm is bankrupt and cannot hire any more workers.
+  ]
+ 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;
+;;; setup procedures ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;
+
+to setup
+  clear-all
+  setup-firms
+  setup-workers
+  produce
+  setup-workers2
+  set prodA 0
+  set prodB 0
+  set counter 0
+  reset-ticks
+  tick
+end
+
+to setup-firms
+  create-firms 2
+  set-default-shape firms "triangle"
+  ask firms [
+    set income 0   
+    set costs 0
+    set profit income - costs
+    set capital 100000
+    set capitallist [100000]
+    set bankrupt false
+    ]
+  ask firm 0 [                   ;; Firm A is green and has green workers
+    set color green
+    setxy (-15)(-15)
+    ]
+  ask firm 1 [                   ;; Firm B is blue and has blue workers
+    set color blue
+    setxy (15)(15)
+    ]
+end
+
+to setup-workers
+  create-workers number-workers
+  set-default-shape workers "person"
+  ask workers [setxy random-xcor random-ycor]
+  ask workers [ 
+    set skill random-poisson 5
+    if skill < 2 [set skill 2]          ;; This parameter is 2 because if an agent's skill is 1, then the it would be usless to the firms production. 
+    set leisure random-normal .5 .2     ;; leisure preferences are normally distributed.
+    if leisure <= 0 [set leisure .001]
+    if leisure > 1 [set leisure 1 ]
+    set waittime random-exponential 5
+    if waittime < 1 [set waittime 1]
+    set effort leisure                  ;; initial effort depends on leisure preferences and then adapts according to other workers and wage policy
+    set category true
+    set counter-wk 0
+    set counter-un 0
+    set effortlist []               
+    set suma1 []
+    set suma2 []
+    set mine1 []
+    set mine2 []   
+  ]
+  ask workers [ 
+    ifelse random 2 < 1 [set color green][set color blue]
+  ]
+  end
+
+
+to setup-workers2
+  
+  let sum-skill-green sum [skill] of workers with [color = green]
+  let sum-skill-blue  sum [skill] of workers with [color = blue]
+ 
+  
+  
+  ask workers with [color = green][
+  
+    set ask-wage  skill ;;( skill / sum-skill-green) * adjusted_prodA
+    ;;set ask-wage skill
+    set real-wage skill ;;ask-wage
+    set effort leisure]
+  
+  
+  ask workers with [color = blue][
+    set ask-wage skill ;;(skill / sum-skill-blue) * adjusted_prodB
+    ;;set ask-wage skill
+    set real-wage skill ;;ask-wage
+    set effort leisure]
+
+    
+ let wage-list []
+  ask workers [ 
+       set wage-list lput real-wage wage-list]
+       set less-prod min wage-list 
+    
+    ask workers[
+    
+    ifelse min-wage [                         ;; min-wage is a switch that activates min-wage-firm sliders (0,15).
+      pen-down
+      ask workers with [color = green][
+        if ask-wage < minimum-wage * less-prod [
+          set ask-wage minimum-wage * less-prod
+          set real-wage ask-wage]
+        ]
+      ask workers with [color = blue][
+        if ask-wage < minimum-wage * less-prod [ 
+          set ask-wage minimum-wage * less-prod
+          set real-wage ask-wage]
+        ]
+      ] []
+  ]
+  
+  
+end
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Go Procedures    ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+to go
+  get_data
+  effort-modify2
+  produce2
+  accounting
+  imgcmg
+  bankruptcy
+  hire2
+  set effort_green_ [effort] of workers with [color = green]
+  set effort_blue_ [effort] of workers with [color = blue]
+  update-plots
+  set counter counter + 1
+  tick
+end
+
+to get_data
+  let wage_green_n (count workers with [color = green])
+  let wage_blue_n (count workers with [color = blue])
+  let green_ []
+  let blue_ []
+  ask workers with [color = green][
+      set green_ lput real-wage green_]
+  ask workers with [color = blue][
+      set blue_ lput real-wage blue_]
+  if wage_green_n < 1 [set wage_green_n 1]
+  if wage_blue_n < 1 [set wage_blue_n 1]
+  
+
+  set wage_green ((sum green_) / wage_green_n)
+  set wage_blue ((sum blue_) / wage_blue_n)
+  
+  ifelse length green_ < 2 [
+    set sdgreen 0
+    
+    ] [ 
+    set sdgreen standard-deviation green_
+    ]
+    
+  ifelse length blue_ < 2 [
+    set sdblue 0
+    ] [
+    set sdblue standard-deviation blue_
+    ]  
+  
+  let effortgreen []
+  let effortblue []
+  ask workers with [color = green] [
+    set effortgreen lput effort effortgreen]
+  ask workers with [color = blue] [
+    set effortblue lput effort effortblue ]
+  
+  
+  
+   
+   set effort_green (( sum effortgreen) / wage_green_n)  
+   set effort_blue (( sum effortblue) / wage_blue_n)
+
+  ifelse length effortgreen < 2 [
+    set sdeffortgreen 0
+   ] [
+    set sdeffortgreen standard-deviation effortgreen
+    ]
+
+  
+  
+  ifelse length effortblue < 2 [
+    set sdeffortblue 0
+    
+    ] [
+    set sdeffortblue standard-deviation effortblue
+  
+    ]
+  
+  
+  ifelse wage_green <= 0 [
+    set vtmwage_green 0 ][
+  set vtmwage_green (  (sdgreen ^ 2) / wage_green )]
+    
+    ifelse wage_blue <= 0[
+      set vtmwage_blue 0][
+  set vtmwage_blue  ( (sdblue ^ 2) / wage_blue )]
+      
+      
+  ifelse effort_green <= 0 [
+    set vtmeffort_green 0][
+  set vtmeffort_green  ( (sdeffortgreen ^ 2) / effort_green)]
+    
+    ifelse effort_blue <= 0 [
+      set vtmeffort_blue 0][
+  set vtmeffort_blue   ( (sdeffortblue ^ 2) / effort_blue)]
+  
+  
+  
+  
+  
+  
+  
+end
+
+to effort-modify2  ;; EFFFFORT MODIFY 222222222222222222222222222222222222222222222222222222222222222222222222222222
+  ask workers [ 
+    if (color = green) [ 
+      
+      if random 3 < 1 [  
+                                                                                                   ;; workers vision is slider ( 0 - 100), it modifies the range of comparison of each worker                                       
+      let y1 (n-of ( (workers-vision / 100 ) * (count workers with [color = green]) ) (workers with [color = green])) 
+      let sum-prod/wag [(skill * effort) / real-wage ] of y1
+      
+      ifelse count y1 < 1 [ set z1 1][set z1 count y1]
+      set aeffort effort * (1 + ( ( sum sum-prod/wag ) / z1 ) - ( (skill * effort) / real-wage ) )
+      
+      
+     
+      set suma1 lput  (( sum sum-prod/wag ) / z1 ) suma1
+      set mine1 lput ((skill * effort) / real-wage ) mine1
+      
+      
+      
+      set aeffortlist effort * ( 1 + ( sum suma1 / length suma1) - (sum mine1 / length mine1) )
+ 
+      if aeffortlist < .1 [set aeffortlist .1]
+      
+      
+      
+      if counter-wk > 4 and (1 + (sum mine1 / length mine1) - ( sum suma1 / length suma1)) > 1 [demand-better-wage2
+        ]
+ 
+      ] 
+      
+      ]
+    
+    
+   if (color = blue)[
+     
+     if random 3 < 1[
+       
+      let y2 (n-of ( (workers-vision / 100 ) * (count workers with [color = blue]) ) workers with [color = blue] )
+      let sum-prod/wag2 [ (skill * effort) / real-wage ] of y2
+      ifelse count y2 < 1 [ set z2 1][set z2 count y2]
+      set aeffort effort * (1 + ( ( sum sum-prod/wag2 ) / z2 ) - ( (skill * effort) / real-wage ) ) 
+      
+     
+          
+      set suma2 lput ( ( sum sum-prod/wag2 ) / z2 ) suma2
+      set mine2 lput ( (skill * effort) / real-wage )  mine2
+      
+      set aeffortlist effort * ( 1 + ( sum suma2 / length suma2) - (sum mine2 / length mine2) )
+      
+      if aeffortlist < .1 [set aeffortlist .1]
+      
+      if counter-wk > 4 and (1 + (sum mine2 / length mine2) - ( sum suma2 / length suma2)) > 1 [demand-better-wage2
+        ]
+
+      ] 
+     
+     ]
+   
+    set counter-wk (counter-wk + 1)
+    set effortlist lput effort effortlist
+    
+   if (color = white)[
+    set counter-un counter-un + 1
+    
+   ]
+  
+
+  ]
+    
+
+
+end
+
+
+
+
+
+to produce
+  set prodA 1                                                         
+  let productionA [skill * effort ] of workers with [ color = green ]  ;; Total production per worker is a function of both skill and effort
+  while [1 < length productionA + 1][                                 ;; Loop to get the Total Production per Firm. Is team work, so its multiplicative. 
+      let x last productionA
+      set prodA prodA * x
+      set productionA but-last productionA
+  ]
+  set prodB 1
+  let productionB [skill * effort ] of workers with [ color = blue ]
+  while [1 < length productionB + 1][
+      let x last productionB
+      set prodB prodB * x
+      set productionB but-last productionB
+  ]
+  set prodA precision (prodA ^ alpha) 10                                 ;; Alpha is an exponential that smooths the production function. Both Firms share the same Production Function
+  set prodB precision (prodB ^ alpha) 10                                 ;; They can be modified as Slider (0, 2)
+  
+  if prodA <= 0 [set prodA 0]
+  if prodB <= 0 [set prodB 0]
+  
+  
+end
+
+
+ to produce2
+  
+  set prodA sum [skill * effort ] of workers with [color = green]
+  set prodA prodA ^ alpha
+
+  set prodB sum [skill * effort] of workers with [color = blue]
+  set prodB prodB ^ alpha
+ 
+  
+end
+  
+
+
+to accounting
+  let wage-workers1 [real-wage] of workers with [color = green]
+  
+  
+  ask firms [
+    
+   if (color = green) [
+    set income prodA
+    set costs  sum wage-workers1
+    
+    
+    
+    set profit income - costs
+    set capital capital + profit
+    set capitallist lput capital capitallist
+    if length capitallist > 3 [ set capitallist but-first capitallist]
+  ]
+   
+   
+  if (color = blue) [ 
+  let wage-workers2 [real-wage] of workers with [color = blue]
+  
+    set income prodB
+    set costs  sum wage-workers2
+    
+    
+    set profit income - costs
+    set capital capital  + profit
+    set capitallist lput capital capitallist
+    if length capitallist > 3 [ set capitallist but-first capitallist]
+  ]
+  
+  ]
+end
+
+
+
+
+
+
+
+to bankruptcy
+  
+  ask firms [
+    
+    
+    if (color = green)[
+      ifelse sum capitallist / 3  <= 0 [
+        
+       
+        let median_skilled_green median [skill] of workers with [color = green]
+        
+        
+        
+        ask workers with [color = green][
+         if skill < median_skilled_green [set color white]]
+      
+       set bankrupt  true
+       set capitallist []
+       ]
+       
+       
+       
+       [ set bankrupt false]]
+    
+    
+    
+    
+    if (color = blue)[
+      ifelse sum capitallist / 3 <= 0[
+
+        let median_skilled_blue median [skill] of workers with [color = blue]
+
+
+         ask workers with [color = blue][
+         if skill < median_skilled_blue [set color white]
+        ]
+         set bankrupt  true
+         set capitallist []
+      ][ set bankrupt false]
+    ]
+  ]
+end  
+  
+
+
+to imgcmg
+  
+  ask workers [ 
+      carefully [set IMGa ( alpha * (( ProdA * skill) ^ (alpha - 1 ) ) * ProdA )] [print "error"]
+      carefully [set IMGb ( alpha * (( ProdB * skill) ^ (alpha - 1 ) ) * ProdB ) ][print "error"]
+  ]
+  
+end
+
+
+
+to hire2
+  
+  ask workers with [color = white] [ 
+    set category false
+    set real-wage 0
+    set suma1 []
+    set suma2 []
+    set mine1 []
+    set mine2 []
+    ifelse min-wage [
+      pen-down
+      if ask-wage < minimum-wage * less-prod [
+        set ask-wage minimum-wage * less-prod]][
+        
+      set ask-wage (ask-wage * .9)]
+      set effort 1
+    
+    if counter-un >= waittime [
+
+      
+     ifelse random 2 < 1 [
+      ;;if ask-wage <= wage_green or ask-wage <= skill [
+        if ask-wage <= IMGa [
+               set category true
+               set counter-un 0
+               set color green 
+              set real-wage ask-wage ]
+        
+        ]
+     
+     
+     [
+      ;;if ask-wage <= wage_blue or ask-wage <= skill [
+        if ask-wage <= IMGb [
+        set category true
+        set counter-un 0
+        set color blue 
+        set real-wage ask-wage]
+        ]
+     ]
+   ] 
+    
+  bankruptcy
+
+  
+end
+
+
+
+
+to demand-better-wage2
+ set counter-wk 0
+ 
+  
+    if (color = green) [
+     
+     
+     set ask-wage (real-wage * ( 1 + (sum mine1 / length mine1) - ( sum suma1 / length suma1)))
+     set suma1 []
+     set suma2 []
+     set mine1 []
+     set mine2 []
+     
+     ifelse min-wage [                    
+      pen-down
+        if ask-wage < minimum-wage * less-prod [set ask-wage minimum-wage * less-prod]
+        ][]    
+      
+      
+       ;;if ask-wage > wage_green or ask-wage > skill  [set color  white] 
+       ;;if ask-wage <= wage_green or ask-wage <= skill [set real-wage ask-wage]]        
+         if ask-wage > wage_green + sdgreen [
+           
+           ifelse  aeffortlist > leisure  [
+              set effort aeffortlist
+              set ask-wage real-wage
+              
+              ]
+           [set color white]]
+         
+         if ask-wage <= wage_green + sdgreen [set real-wage ask-wage  ]
+         
+    ]
+                                                                                 ;;   
+    if (color = blue)  [
+      set ask-wage (real-wage * ( 1 + (sum mine2 / length mine2) - ( sum suma2 / length suma2)))
+      set suma1 []
+      set suma2 []
+      set mine1 []
+      set mine2 []
+       ifelse min-wage [                    
+      pen-down
+        if ask-wage < minimum-wage * less-prod [set ask-wage minimum-wage * less-prod ]
+        ][]
+
+       ;;if ask-wage > wage_blue or ask-wage > skill  [set color  white] 
+       ;;if ask-wage <= wage_blue or ask-wage <= skill [set real-wage ask-wage]]
+         if ask-wage > wage_blue + sdblue[
+            
+           ifelse  aeffortlist > leisure  [
+              set effort aeffortlist 
+              set ask-wage real-wage
+             
+             ]
+           [set color white]]
+         
+         if ask-wage <= wage_blue + sdblue [set real-wage ask-wage 
+           ]
+    ]   
+  
+  
+  
+  
+  
+  
+end
+      
+      
+        
